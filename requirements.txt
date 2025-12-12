@@ -1,0 +1,7 @@
+pyyaml
+numpy
+pandas
+python-dotenv
+kagglehub
+scikit-learn
+pyarrow
