@@ -3,8 +3,8 @@ from jax import random
 import jax.numpy as jnp
 import optax
 from functools import partial
-
-
+import numpy as np
+import pandas as pd
 
 def get_batch(data, rng_key, batch_size, block_size):
     """
@@ -89,3 +89,65 @@ def loss_fn(variables, forward_fn, index_seq, labels):
     # Average loss across all batches and time steps
     loss = loss.mean()
     return loss
+
+
+"""encoder: take a data frame, output a list of integers"""
+def encode(df):
+    v = df['vector_id'].to_numpy()
+    first_nonzero = np.argmax(v != 0)
+    vector_ids = v[first_nonzero:].tolist() if np.any(v != 0) else []
+    return vector_ids
+
+"""decoder: take a list of integers, output a dataframe"""
+def decode(vector_ids, df, vector_col='vector_id'):
+    mapping = df[df[vector_col] != 0].set_index(vector_col)
+    decoded_rows = []
+    last_row = None
+    
+    for vid in vector_ids:
+        if vid == 0:
+            # repeat previous row if available
+            if last_row is not None:
+                decoded_rows.append(last_row)
+            else:
+                # first entry is zero → append NaNs
+                decoded_rows.append(pd.Series({col: None for col in df.columns if col != vector_col}))
+        else:
+            # fetch row from mapping
+            row = mapping.loc[vid]
+            # If mapping has multiple rows per vector_id, take the first
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            decoded_rows.append(row)
+            last_row = row
+            
+    # Combine into a DataFrame  
+    decoded_df = pd.DataFrame(decoded_rows).reset_index(drop=True)
+    return decoded_df
+
+def get_vector_batch(vector_ids, rng_key, batch_size, block_size):
+    v = np.array(vector_ids)  # ensure numpy array
+    n = len(v)
+    
+    # find all valid start indices (where a full block fits and first vector_id != 0)
+    valid_starts = np.where(v[:n-block_size] != 0)[0]
+    
+    if len(valid_starts) < batch_size:
+        raise ValueError("Not enough valid sequences to sample the batch.")
+    
+    # randomly choose start indices
+    idx = random.choice(rng_key, jnp.array(valid_starts), shape=(batch_size,), replace=False)
+    
+    x_batch = []
+    y_batch = []
+    
+    for i in idx:
+        seq = v[i:i+block_size]
+        target = v[i+1:i+block_size+1]
+        x_batch.append(seq)
+        y_batch.append(target)
+    
+    x = jnp.stack(x_batch)
+    y = jnp.stack(y_batch)
+    
+    return x, y

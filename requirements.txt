@@ -5,10 +5,11 @@ python-dotenv
 kagglehub
 scikit-learn
 pyarrow
-jax[cpu]
+jax[cuda12]
 jaxlib
 flax
 optax
 numpy
 requests
 tqdm
+matplotlib
