@@ -3,67 +3,58 @@ from jax import random
 import jax.numpy as jnp
 import optax
 from functools import partial
+import jax.lax as lax
 import numpy as np
 import pandas as pd
 
-def get_batch(data, rng_key, batch_size, block_size):
-    """
-    Extracts a random batch of input and target data
-    Args:
-        data: An array of all the data's token ID's.
-        rng_key: Random number generator key.
-        batch_size: Number of parallel batches.
-        block_size: Maximum time length for the token sequence.
-    Returns:
-        Input token ID's and target token ID's.
-    """
-    ix = random.randint(key=rng_key, shape=(batch_size, ), minval=0, maxval=len(data) - block_size)
-    x = jnp.stack([data[i:i+block_size] for i in ix])
-    y = jnp.stack([data[i+1:i+block_size+1] for i in ix])
-    return x, y
+@partial(
+    jax.jit,
+    static_argnames=['forward_fn', 'vocab_size', 'batch_size', 'block_size', 'max_new_tokens']
+)
+def generate(variables, forward_fn, index_seq, rng_key,
+             vocab_size, batch_size, block_size, max_new_tokens):
 
+    B, T = index_seq.shape
+    final_T = T + max_new_tokens
 
-@partial(jax.jit, static_argnames=['forward_fn', 'vocab_size', 'batch_size', 'block_size', 'max_new_tokens'])
-def generate(variables, forward_fn, index_seq, rng_key, vocab_size, batch_size, block_size, max_new_tokens):
-    """
-    Generates max_new_tokens number of new tokens, 
-    given the starting sequence of tokens index_seq 
-    Args:
-        variables: Bigram models parameters.
-        forward_fn: Function that performs a forward pass of the model.
-        index_seq: Array of token indices with shape (B, T), 
-            where B is the batch size and T is the time steps.
-        rng_key: Random number generator key.
-        vocab_size: Number of independent tokens in the vocabulary.
-        batch_size: Number of parallel batches.
-        max_new_tokens: Maximum number of new tokens to generate
-    Returns:
-        An array of generated indices
-    """
-    # Batched sampling function
-    batched_choice = jax.vmap(jax.random.choice)
-    
-    for _ in range(max_new_tokens):
-        # Crop index_seq to the last block_size tokens
-        index_cond = index_seq[:, -block_size:]
+    # ---------- FIX: Pre-pad with block_size zeros on the left ----------
+    pad = jnp.zeros((B, block_size), dtype=index_seq.dtype)
+    out = jnp.concatenate([pad, index_seq], axis=1)  # shape (B, block_size + T)
+
+    # We will write new tokens starting from position block_size + T
+    def step(carry, t_offset):
+        out, rng = carry
+
+        # Slice exactly block_size tokens (static shape)
+        start = t_offset                           # dynamic index
+        index_cond = lax.dynamic_slice(out, (0, start), (B, block_size))
+
+        # Run model on the block-size window
         logits = forward_fn(variables, index_cond)
-        # Focus only on the last time step
-        # Shape changes from (B, T, C) -> (B, C)
-        logits = logits[:, -1, :]
-        # Convert to probabilities using softmax
-        probs = jax.nn.softmax(logits, axis=-1)
-        # Sample a token index using probs
-        rng_key, subkey = jax.random.split(rng_key)
-        batched_key = subkey.reshape(1, -1)
-        batched_key = jnp.repeat(batched_key, batch_size, axis=0)
-        a = jnp.arange(vocab_size).reshape(1, -1)
-        a = jnp.repeat(a, batch_size, axis=0)
-        next_indexes = batched_choice(batched_key, a, p=probs)
-        next_indexes = next_indexes.reshape(batch_size, -1)
-        # Append the sampled index to the running sequence
-        index_seq = jnp.concatenate([index_seq, next_indexes], axis=1)
-    return index_seq
+        logits = logits[:, -1]                     # (B, vocab)
 
+        # Sample
+        rng, sub = jax.random.split(rng)
+        next_idx = jax.random.categorical(sub, logits=logits)
+
+        # Write next token at out[:, t_offset + block_size]
+        out = lax.dynamic_update_slice(
+            out,
+            next_idx[:, None],
+            (0, t_offset + block_size)
+        )
+
+        return (out, rng), None
+
+    # t_offset will run from T ... final_T-1
+    (out, _), _ = lax.scan(
+        step,
+        (out, rng_key),
+        jnp.arange(T, final_T)
+    )
+
+    # Remove the left padding again
+    return out[:, block_size:]
 
 def masked_fill(mask, a, fill):
     return jax.lax.select(mask, a, jax.lax.broadcast(fill, a.shape))

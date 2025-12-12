@@ -9,7 +9,7 @@ from jax import value_and_grad
 import pickle
 import pandas as pd
 
-from helper_funcs import get_batch, generate, masked_fill, loss_fn
+from helper_funcs import generate, masked_fill, loss_fn
 from tqdm import tqdm
 
 
