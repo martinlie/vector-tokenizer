@@ -83,29 +83,29 @@ def loss_fn(variables, forward_fn, index_seq, labels):
 
 
 """encoder: take a data frame, output a list of integers"""
-def encode(df):
-    v = df['vector_id'].to_numpy()
+def encode(df, token_id_col): #='vector_id'):
+    v = df[token_id_col].to_numpy()
     first_nonzero = np.argmax(v != 0)
-    vector_ids = v[first_nonzero:].tolist() if np.any(v != 0) else []
-    return vector_ids
+    token_ids = v[first_nonzero:].tolist() if np.any(v != 0) else []
+    return token_ids
 
 """decoder: take a list of integers, output a dataframe"""
-def decode(vector_ids, df, vector_col='vector_id'):
-    mapping = df[df[vector_col] != 0].set_index(vector_col)
+def decode(token_ids, df, token_id_col): #='vector_id'):
+    mapping = df[df[token_id_col] != 0].set_index(token_id_col)
     decoded_rows = []
     last_row = None
     
-    for vid in vector_ids:
-        if vid == 0:
+    for token in token_ids:
+        if token == 0:
             # repeat previous row if available
             if last_row is not None:
                 decoded_rows.append(last_row)
             else:
                 # first entry is zero → append NaNs
-                decoded_rows.append(pd.Series({col: None for col in df.columns if col != vector_col}))
+                decoded_rows.append(pd.Series({col: None for col in df.columns if col != token_id_col}))
         else:
             # fetch row from mapping
-            row = mapping.loc[vid]
+            row = mapping.loc[token]
             # If mapping has multiple rows per vector_id, take the first
             if isinstance(row, pd.DataFrame):
                 row = row.iloc[0]
@@ -116,8 +116,8 @@ def decode(vector_ids, df, vector_col='vector_id'):
     decoded_df = pd.DataFrame(decoded_rows).reset_index(drop=True)
     return decoded_df
 
-def get_vector_batch(vector_ids, rng_key, batch_size, block_size):
-    v = np.array(vector_ids)  # ensure numpy array
+def get_token_batch(token_ids, rng_key, batch_size, block_size):
+    v = np.array(token_ids)  # ensure numpy array
     n = len(v)
     
     # find all valid start indices (where a full block fits and first vector_id != 0)
