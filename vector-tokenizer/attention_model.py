@@ -161,3 +161,122 @@ class GPT2(nn.Module):
 
         return logits
 
+class GPT2_v2(nn.Module):
+    """
+    GPT-2 language model with token-type embeddings.
+    """
+    vocab_size: int
+    n_embed: int
+    block_size: int
+    num_heads: int
+    num_layers: int
+    drop_rate: float
+    n_token_types: int = 4   # BOS, EOS, CH, DATA
+
+    @nn.compact
+    def __call__(self, index_seq, token_types):
+        """
+        index_seq:  (B, T) token ids
+        token_types: (B, T) token type ids
+        """
+        B, T = index_seq.shape
+
+        # --- Embeddings ---
+        token_embedding_table = nn.Embed(
+            num_embeddings=self.vocab_size,
+            features=self.n_embed,
+            name="token_embed"
+        )
+        token_emb = token_embedding_table(index_seq)  # (B, T, C)
+
+        type_embedding_table = nn.Embed(
+            num_embeddings=self.n_token_types,
+            features=self.n_embed,
+            name="type_embed"
+        )
+        type_emb = type_embedding_table(token_types)  # (B, T, C)
+
+        position_embedding_table = nn.Embed(
+            num_embeddings=self.block_size,
+            features=self.n_embed,
+            name="pos_embed"
+        )
+        pos_emb = position_embedding_table(jnp.arange(T))  # (T, C)
+
+        # broadcast pos_emb to (B, T, C)
+        x = token_emb + type_emb + pos_emb
+
+        # --- Transformer blocks ---
+        decoder_blocks = [
+            Block(
+                self.n_embed,
+                num_heads=self.num_heads,
+                drop_rate=self.drop_rate
+            )
+            for _ in range(self.num_layers)
+        ]
+        decoder_blocks.append(nn.LayerNorm())
+
+        x = nn.Sequential(decoder_blocks)(x)
+
+        # --- Output head ---
+        lm_head = nn.Dense(self.vocab_size, name="lm_head")
+        logits = lm_head(x)  # (B, T, vocab_size)
+
+        return logits
+
+class GPT2_v3(nn.Module):
+    vocab_size: int
+    n_embed: int
+    block_size: int
+    num_heads: int
+    num_layers: int
+    drop_rate: float
+    n_channels: int
+    n_token_types: int = 4
+
+    @nn.compact
+    def __call__(self, index_seq, token_types, channel_ids):
+        B, T = index_seq.shape
+
+        # --- token embedding ---
+        tok_emb = nn.Embed(
+            num_embeddings=self.vocab_size,
+            features=self.n_embed,
+            name="token_embed"
+        )(index_seq)
+
+        # --- token-type embedding ---
+        type_emb = nn.Embed(
+            num_embeddings=self.n_token_types,
+            features=self.n_embed,
+            name="type_embed"
+        )(token_types)
+
+        # --- channel embedding ---
+        # +1 because NO_CHANNEL = -1 maps to index 0
+        ch_emb = nn.Embed(
+            num_embeddings=self.n_channels + 1,
+            features=self.n_embed,
+            name="channel_embed"
+        )(channel_ids + 1)
+
+        # --- position embedding ---
+        pos_emb = nn.Embed(
+            num_embeddings=self.block_size,
+            features=self.n_embed,
+            name="pos_embed"
+        )(jnp.arange(T))
+
+        x = tok_emb + type_emb + ch_emb + pos_emb
+
+        # --- transformer ---
+        blocks = nn.Sequential([
+            Block(self.n_embed, self.num_heads, self.drop_rate)
+            for _ in range(self.num_layers)
+        ] + [nn.LayerNorm()])
+
+        x = blocks(x)
+
+        logits = nn.Dense(self.vocab_size, name="lm_head")(x)
+        return logits
