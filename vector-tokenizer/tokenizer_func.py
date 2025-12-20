@@ -33,6 +33,63 @@ def encode_with_channels(x_bins: jnp.ndarray, n_channels: int):
     packed = jnp.concatenate([bos, interleaved, eos], axis=1)
     return packed.reshape(-1)
 
+def encode_with_channels_sparse(x_bins: jnp.ndarray, n_channels: int, zero_bin: int):
+    """
+    Sparse delta encoding (JAX-safe).
+
+    x_bins: (N, D) integer delta bins, 0 = no change
+    returns: (variable length,) flat token stream (PAD removed)
+    """
+    N, D = x_bins.shape
+    assert D == n_channels
+
+    BOS = 0
+    EOS = 1
+    CH_OFFSET = 2
+    DATA_OFFSET = 2 + n_channels
+    PAD = -1
+
+    # channel ids [0..D-1]
+    ch_ids = jnp.arange(D, dtype=x_bins.dtype)
+
+    def encode_row(row_bins):
+        # mask non-zero deltas
+        mask = row_bins != zero_bin
+
+        # CH / DATA tokens (or PAD)
+        ch_tokens = jnp.where(
+            mask,
+            ch_ids + CH_OFFSET,
+            PAD
+        )
+
+        data_tokens = jnp.where(
+            mask,
+            row_bins + DATA_OFFSET,
+            PAD
+        )
+
+        # interleave CH, DATA (fixed size!)
+        interleaved = jnp.stack([ch_tokens, data_tokens], axis=1).reshape(-1)
+
+        # add BOS / EOS
+        tokens = jnp.concatenate([
+            jnp.array([BOS], dtype=x_bins.dtype),
+            interleaved,
+            jnp.array([EOS], dtype=x_bins.dtype),
+        ])
+
+        return tokens
+
+    # (N, fixed_len)
+    rows = jax.vmap(encode_row)(x_bins)
+
+    # flatten and REMOVE PAD tokens
+    flat = rows.reshape(-1)
+    flat = flat[flat != PAD]
+
+    return flat
+
 def decode_with_channels(flat, n_channels):
     """
     A training block must start at BOS and must not cross an EOS.
@@ -120,10 +177,11 @@ def loss_fn(params, apply_fn, x, token_types, channel_ids, n_channels, y):
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, y)
 
     # Only learn from DATA tokens
-    DATA_OFFSET = 2 + n_channels
-    mask = y >= DATA_OFFSET
+    #DATA_OFFSET = 2 + n_channels
+    #mask = y >= DATA_OFFSET
 
-    loss = (loss * mask).sum() / mask.sum()
+    #loss = (loss * mask).sum() / mask.sum()
+    loss = loss.mean()
     return loss
 
 def compute_token_types(tokens, n_channels):

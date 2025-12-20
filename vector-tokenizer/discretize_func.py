@@ -136,3 +136,99 @@ def decode_equal_width(tokens, mids):
         for d in range(tokens.shape[1])
     ], axis=1)
 
+def fit_quantile_bins_global(data: np.ndarray, n_bins: int):
+    """
+    Global quantile discretization.
+
+    data: (N, D)
+    returns:
+        edges: (n_bins-1,)
+        mids:  (n_bins,)
+    """
+    flat = data.reshape(-1)
+
+    # handle degenerate case
+    if np.unique(flat).size <= 1:
+        edges = np.array([])
+        mids = np.array([flat[0]])
+        return edges, mids
+
+    qs = np.linspace(0.0, 1.0, n_bins + 1)
+    q = np.quantile(flat, qs)
+
+    edges = q[1:-1]                       # (n_bins-1,)
+    mids = (q[:-1] + q[1:]) / 2           # (n_bins,)
+
+    return edges, mids
+
+def encode_quantile_global(x, edges):
+    """
+    Global quantile encoding.
+
+    x:     (T, D)
+    edges: (n_bins-1,)
+    returns: (T, D) int32 bin indices
+    """
+    edges = jnp.asarray(edges)
+    return jnp.digitize(x, edges)
+
+def decode_quantile_global(tokens, mids):
+    """
+    Global quantile decoding.
+
+    tokens: (T, D)
+    mids:   (n_bins,)
+    returns: (T, D) approx continuous values
+    """
+    mids = jnp.asarray(mids)
+    tokens = jnp.clip(tokens, 0, mids.shape[0] - 1)
+    return mids[tokens]
+
+def fit_equal_width_bins_global(data: np.ndarray, n_bins: int):
+    """
+    Global equal-width discretization.
+
+    data: (N, D)
+    returns:
+        edges: (n_bins-1,)
+        mids:  (n_bins,)
+    """
+    flat = data.reshape(-1)
+
+    lo = flat.min()
+    hi = flat.max()
+
+    if lo == hi:
+        edges = np.array([])
+        mids = np.array([lo])
+        return edges, mids
+
+    edges = np.linspace(lo, hi, n_bins + 1)[1:-1]
+    mids = np.linspace(lo, hi, n_bins + 1)
+    mids = (mids[:-1] + mids[1:]) / 2
+
+    return edges.astype(np.float32), mids.astype(np.float32)
+
+def encode_equal_width_global(x, edges):
+    """
+    Global equal-width encoding.
+
+    x:     (T, D)
+    edges: (n_bins-1,)
+    returns: (T, D) int32
+    """
+    edges = jnp.asarray(edges)
+    return jnp.digitize(x, edges)
+
+def decode_equal_width_global(tokens, mids):
+    """
+    Global equal-width decoding.
+
+    tokens: (T, D)
+    mids:   (n_bins,)
+    returns: (T, D) approx continuous values
+    """
+    mids = jnp.asarray(mids)
+    tokens = jnp.clip(tokens, 0, mids.shape[0] - 1)
+    return mids[tokens]
+
