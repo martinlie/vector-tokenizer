@@ -33,10 +33,10 @@ def get_split_data():
       df = df.ffill()
 
       # Downsample from 5-min resolution to hourly
-      df = df.resample("h").mean()
+      #df = df.resample("h").mean()
 
       # Downsample from 5-min resolution to quarterly
-      #df = df.resample("15min").mean()
+      df = df.resample("15min").mean()
 
       # Change to numeric index (remove datetime)
       #df = df.reset_index(drop=True)

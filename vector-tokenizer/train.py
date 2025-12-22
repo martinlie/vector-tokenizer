@@ -7,15 +7,15 @@ import discretize_func as discretize
 import tokenizer_func as tokenizer
 
 # Parameters
-n_bins=1024 # discretization fit bins
-n_embed = 16 # 32 # Number of embedding dimensions
+n_bins = 4096 # discretization fit bins
+n_embed = 768 # 16 # 32 # Number of embedding dimensions
 batch_size = 8 #4 # How many independent sequences will we process in parallel?
 block_size = 480 # What is the maximum context length for predictions?
-num_heads = 4 # Number of heads in the multi-headed block
-num_layers = 6 # Number of transformer decoder blocks
+num_heads = 12 #4 # Number of heads in the multi-headed block
+num_layers = 12 #6 # Number of transformer decoder blocks
 drop_rate = 0.1 # Dropout rate for regularization
 learning_rate = 1e-5
-epochs = 15
+epochs = 100000
 
 rng_key = jax.random.PRNGKey(42)
 
