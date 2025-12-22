@@ -68,3 +68,22 @@ The Parameters used below are a scaled down version of GPT-2. GPT-2 has 4 differ
 - num_heads: 25
 - num_layers: 48
 - vocab_size: 50257 (uses Tiktoken vocab)
+
+## Download model files
+
+```
+sudo apt install rclone
+rclone config
+``` 
+
+**sync data to scw**
+
+      rclone copy models scw:vector-tokenizer-models/models -P
+
+**fix permissions**
+
+      sudo chown -R $USER:$USER models
+
+**download from scw**
+      rclone copy  scw:vector-tokenizer-models/models models -P
+
