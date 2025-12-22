@@ -9,6 +9,14 @@ jax #[cuda12]
 jaxlib
 flax
 optax
+
+# on windows:
+#jax==0.4.28
+#jaxlib==0.4.28
+#flax==0.8.2
+#optax==0.2.2
+
+
 numpy
 requests
 tqdm
