@@ -177,7 +177,7 @@ cython_debug/
 .cache/
 *.pdf
 *.png
-./*.pkl
+*.pkl
 .conda
 data/
 ./*.pickle
