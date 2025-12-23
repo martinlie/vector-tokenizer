@@ -169,7 +169,18 @@ def generate_continue(
 
         rng, sub = jax.random.split(rng)
         masked_logits = jnp.where(mask, logits, -1e9)
-        next_tok = jax.random.categorical(sub, masked_logits)[0]
+        #next_tok = jax.random.categorical(sub, masked_logits)[0]
+
+        # prefer deterministic (greedy) selection for DATA tokens to reduce randomness;
+        # sample stochastically for other token types
+        ttype = token_type(last_tok, n_channels)
+        def pick_data(_):
+            # argmax over last axis gives a (1,) array; take [0] to return a scalar
+            return jnp.asarray(jnp.argmax(masked_logits, axis=-1)[0], dtype=jnp.int32)
+        def pick_other(_):
+            # categorical returns shape (1,), index [0] -> scalar
+            return jax.random.categorical(sub, masked_logits)[0]
+        next_tok = lax.cond(ttype == 2, pick_data, pick_other, operand=None)
 
         # update emitted_any
         is_data = next_tok >= DATA_OFFSET
