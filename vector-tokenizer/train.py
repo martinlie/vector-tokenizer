@@ -16,6 +16,7 @@ num_layers = 12 #6 # Number of transformer decoder blocks
 drop_rate = 0.1 # Dropout rate for regularization
 learning_rate = 1e-5
 epochs = 100000
+resample_interval = "h"  # or "15min"
 
 rng_key = jax.random.PRNGKey(42)
 
@@ -23,7 +24,6 @@ if __name__ == "__main__":
       tl.status()
 
       # Load splitted data
-      resample_interval="h"  # or "15min"
       X, Y = tl.get_split_data(resample_interval=resample_interval)
       print(f"X: {X.shape}")
       print(f"Y: {Y.shape}")
