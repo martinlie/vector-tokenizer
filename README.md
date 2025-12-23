@@ -69,6 +69,15 @@ The Parameters used below are a scaled down version of GPT-2. GPT-2 has 4 differ
 - num_layers: 48
 - vocab_size: 50257 (uses Tiktoken vocab)
 
+## Train
+
+Train with
+
+```
+python vector-tokenizer/train.py 
+```
+
+
 ## Download model files
 
 ```
@@ -79,6 +88,10 @@ rclone config
 **sync data to scw**
 
       rclone copy models scw:vector-tokenizer-models/models -P
+
+or
+
+      rclone copy models scw:vector-tokenizer-models/models --progress --ignore-existing
 
 **fix permissions**
 

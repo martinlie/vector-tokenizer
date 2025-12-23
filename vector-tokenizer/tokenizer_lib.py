@@ -33,10 +33,10 @@ def get_split_data():
       df = df.ffill()
 
       # Downsample from 5-min resolution to hourly
-      #df = df.resample("h").mean()
+      df = df.resample("h").mean()
 
       # Downsample from 5-min resolution to quarterly
-      df = df.resample("15min").mean()
+      #df = df.resample("15min").mean()
 
       # Change to numeric index (remove datetime)
       #df = df.reset_index(drop=True)
@@ -57,7 +57,7 @@ def get_split_data():
 
 def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, 
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
-            vocab_size, n_bins, edges, mids, variables = None, model = None):
+            vocab_size, n_bins, edges, mids, zero_bin, variables = None, model = None):
 
       MODEL_DIR = Path("./models")
       MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,6 +148,7 @@ def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma,
                   "mids": mids,
                   "mu": mu,
                   "sigma": sigma,
+                  "zero_bin": zero_bin,
             }
 
             # Save model every 10th epoch or if last
