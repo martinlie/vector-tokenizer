@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import jax
+import jax, jaxlib
 import jax.numpy as jnp
 import tokenizer_lib as tl
 import discretize_func as discretize
@@ -20,9 +20,11 @@ epochs = 100000
 rng_key = jax.random.PRNGKey(42)
 
 if __name__ == "__main__":
-      
+      tl.status()
+
       # Load splitted data
-      X, Y = tl.get_split_data()
+      resample_interval="h"  # or "15min"
+      X, Y = tl.get_split_data(resample_interval=resample_interval)
       print(f"X: {X.shape}")
       print(f"Y: {Y.shape}")
 
@@ -76,7 +78,7 @@ if __name__ == "__main__":
 
       # Train
       model_file = tl.train(model_name, rng_key, epochs, learning_rate, 
-            tokens, mu, sigma, 
+            tokens, mu, sigma, resample_interval,
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
             vocab_size, n_bins, edges, mids, ZERO_BIN)
 

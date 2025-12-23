@@ -170,18 +170,41 @@ def get_token_batch(
     x, y = jax.vmap(slice_block)(starts)
     return x, y
 
-
-def loss_fn(params, apply_fn, x, token_types, channel_ids, n_channels, y):
+"""
+Loss function with weighted tokens.
+* Grammar tokens still produce gradients → model learns sequence validity.
+* DATA tokens dominate the loss → model allocates capacity to values.
+* Normalization prevents loss scale from drifting when token mix changes.
+"""
+def loss_fn(
+    params,
+    apply_fn,
+    x,
+    token_types,
+    channel_ids,
+    n_channels,
+    y,
+    w_data=1.0,
+    w_grammar=0.1,
+):
     logits = apply_fn(params, x, token_types, channel_ids)
 
-    loss = optax.softmax_cross_entropy_with_integer_labels(logits, y)
+    # per-token CE
+    ce = optax.softmax_cross_entropy_with_integer_labels(
+        logits, y
+    )
 
-    # Only learn from DATA tokens
-    #DATA_OFFSET = 2 + n_channels
-    #mask = y >= DATA_OFFSET
+    DATA_OFFSET = 2 + n_channels
 
-    #loss = (loss * mask).sum() / mask.sum()
-    loss = loss.mean()
+    # build weights
+    weights = jnp.where(
+        y >= DATA_OFFSET,
+        w_data,       # DATA tokens
+        w_grammar,    # BOS / EOS / CH tokens
+    )
+
+    # normalize so scale of loss is stable
+    loss = (ce * weights).sum() / weights.sum()
     return loss
 
 def compute_token_types(tokens, n_channels):

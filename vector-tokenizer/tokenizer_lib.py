@@ -1,7 +1,7 @@
 import os
 import requests
 import numpy as np
-import jax
+import jax, jaxlib
 import jax.numpy as jnp
 import flax.linen as nn
 import optax
@@ -17,7 +17,6 @@ from helper_funcs import generate, masked_fill
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from attention_model import *
-print(jax.devices())
 
 # Disable JIT compilation
 #jax.config.update("jax_disable_jit", True)
@@ -25,21 +24,20 @@ print(jax.devices())
 import discretize_func as discretize
 import tokenizer_func as tokenizer
 
-def get_split_data():
+def status():
+      print("jax", jax.__version__, "jaxlib", jaxlib.__version__)
+      print(jax.default_backend())
+      print(jax.devices())
+
+def get_split_data(path: str = "./data", resample_interval: str = "h"): # or "15min"
       # Read
-      df = pd.read_parquet(Path("./data") / "dehli.parquet")
+      df = pd.read_parquet(Path(path) / "dehli.parquet")
 
       # Fill nans with nearest
       df = df.ffill()
 
-      # Downsample from 5-min resolution to hourly
-      df = df.resample("h").mean()
-
-      # Downsample from 5-min resolution to quarterly
-      #df = df.resample("15min").mean()
-
-      # Change to numeric index (remove datetime)
-      #df = df.reset_index(drop=True)
+      # Downsample from 5-min resolution
+      df = df.resample(resample_interval).mean()
 
       # Fill nans with nearest
       df = df.ffill()
@@ -55,7 +53,7 @@ def get_split_data():
 
       return X, Y
 
-def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, 
+def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, resample_interval,
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
             vocab_size, n_bins, edges, mids, zero_bin, variables = None, model = None):
 
@@ -148,6 +146,7 @@ def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma,
                   "mids": mids,
                   "mu": mu,
                   "sigma": sigma,
+                  "resample_interval": resample_interval,
                   "zero_bin": zero_bin,
             }
 

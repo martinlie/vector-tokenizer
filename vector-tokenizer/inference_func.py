@@ -15,9 +15,6 @@ from datetime import datetime
 from helper_funcs import generate, masked_fill
 from tqdm import tqdm
 from attention_model import *
-print("jax", jax.__version__, "jaxlib", jaxlib.__version__)
-print(jax.default_backend())
-print(jax.devices())
 
 def infer_token_types_and_channels(tokens, n_channels):
     """
@@ -168,7 +165,7 @@ def generate_continue(
         )
 
         rng, sub = jax.random.split(rng)
-        masked_logits = jnp.where(mask, logits, -1e9)
+        masked_logits = jnp.where(mask, logits, -jnp.inf) #-1e9)
         #next_tok = jax.random.categorical(sub, masked_logits)[0]
 
         # prefer deterministic (greedy) selection for DATA tokens to reduce randomness;
