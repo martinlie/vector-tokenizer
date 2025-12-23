@@ -69,8 +69,12 @@ if __name__ == "__main__":
       # Inspect first few tokens
       print("Last 100 tokens:", tokens[:100])
 
+      # Continue training
+      model_name = "token_model_20251222_140751.pkl"
+      # else model_name = None
+
       # Train
-      model_file = tl.train(rng_key, epochs, learning_rate, 
+      model_file = tl.train(model_name, rng_key, epochs, learning_rate, 
             tokens, mu, sigma, 
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
             vocab_size, n_bins, edges, mids)

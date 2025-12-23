@@ -229,6 +229,10 @@ def decode_equal_width_global(tokens, mids):
     returns: (T, D) approx continuous values
     """
     mids = jnp.asarray(mids)
-    tokens = jnp.clip(tokens, 0, mids.shape[0] - 1)
-    return mids[tokens]
+    tokens = jnp.asarray(tokens)
+
+    tokens_clipped = jnp.clip(tokens, 0, mids.shape[0] - 1)
+    values = mids[tokens_clipped]
+
+    return jnp.where(tokens == 0, 0.0, values) # jnp.nan
 

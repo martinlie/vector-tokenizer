@@ -55,38 +55,54 @@ def get_split_data():
 
       return X, Y
 
-def train(rng_key, epochs, learning_rate, train_tokens, mu, sigma, 
+def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, 
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
-            vocab_size, n_bins, edges, mids):
+            vocab_size, n_bins, edges, mids, variables = None, model = None):
 
       MODEL_DIR = Path("./models")
       MODEL_DIR.mkdir(parents=True, exist_ok=True)
-      model_name = MODEL_DIR / f"token_model_{datetime.now():%Y%m%d_%H%M%S}.pkl"
-      print("Model:", model_name)
-
-      # Set up and spin model
-      rng_key, subkey = jax.random.split(rng_key)
-      xb, yb = tokenizer.get_token_batch(train_tokens, subkey, batch_size, n_channels, block_size)
-      token_types = tokenizer.compute_token_types(xb, n_channels)
-
-      model = GPT2_v3(vocab_size, n_embed, block_size, num_heads, num_layers, drop_rate, n_channels)
-      dummy_x = jnp.zeros(shape=(batch_size, block_size), dtype=jnp.uint16)
-      dummy_token_types = jnp.zeros_like(dummy_x)
-      dummy_channel_ids = jnp.zeros_like(dummy_x)
-      variables = model.init(rng_key, dummy_x, dummy_token_types, dummy_channel_ids)
-
-      out = model.apply(variables, dummy_x, dummy_token_types, dummy_channel_ids)
-      print("Test model.apply():", out.shape)
-
-      print("Cross-entropy loss:", np.log(vocab_size))
 
       # Establish optimizer
       optimizer = optax.chain(
             optax.clip_by_global_norm(1.0),
             optax.adamw(learning_rate)
       )
-      opt_state = optimizer.init(variables)
-      losses = []
+
+      if model_name is None:
+            model_name = MODEL_DIR / f"token_model_{datetime.now():%Y%m%d_%H%M%S}.pkl"
+            print("Model:", model_name)
+
+            # Set up and spin model
+            rng_key, subkey = jax.random.split(rng_key)
+            xb, yb = tokenizer.get_token_batch(train_tokens, subkey, batch_size, n_channels, block_size)
+            token_types = tokenizer.compute_token_types(xb, n_channels)
+
+            model = GPT2_v3(vocab_size, n_embed, block_size, num_heads, num_layers, drop_rate, n_channels)
+            dummy_x = jnp.zeros(shape=(batch_size, block_size), dtype=jnp.uint16)
+            dummy_token_types = jnp.zeros_like(dummy_x)
+            dummy_channel_ids = jnp.zeros_like(dummy_x)
+            variables = model.init(rng_key, dummy_x, dummy_token_types, dummy_channel_ids)
+
+            out = model.apply(variables, dummy_x, dummy_token_types, dummy_channel_ids)
+            print("Test model.apply():", out.shape)
+
+            print("Cross-entropy loss:", np.log(vocab_size))
+            
+            opt_state = optimizer.init(variables)
+            losses = []
+      else:
+            model_name = MODEL_DIR / model_name
+            print("Model:", model_name)
+
+            # Load model
+            with open(model_name, 'rb') as f:
+                  model_file = pickle.load(f)
+
+            globals().update(model_file)
+            variables = model_file['variables']
+            model = model_file['model']
+            opt_state = model_file['opt_state']
+            losses = model_file['losses']
 
       # Training loop
       pbar = tqdm(range(epochs))
@@ -142,3 +158,4 @@ def train(rng_key, epochs, learning_rate, train_tokens, mu, sigma,
                         pickle.dump(model_file, f)
 
       return model_file
+
