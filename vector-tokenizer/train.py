@@ -14,8 +14,8 @@ block_size = 480 # What is the maximum context length for predictions?
 num_heads = 12 #4 # Number of heads in the multi-headed block
 num_layers = 12 #6 # Number of transformer decoder blocks
 drop_rate = 0.1 # Dropout rate for regularization
-learning_rate = 1e-5
-epochs = 100000
+learning_rate = 3e-5 #1e-5
+epochs = 10000
 resample_interval = "h"  # or "15min"
 
 rng_key = jax.random.PRNGKey(42)

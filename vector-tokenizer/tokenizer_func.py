@@ -185,7 +185,7 @@ def loss_fn(
     n_channels,
     y,
     w_data=1.0,
-    w_grammar=0.1,
+    w_grammar=0.5,
 ):
     logits = apply_fn(params, x, token_types, channel_ids)
 

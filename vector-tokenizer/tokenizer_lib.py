@@ -61,9 +61,16 @@ def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, r
       MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
       # Establish optimizer
+      learning_schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=3e-5,
+            warmup_steps=0.05 * epochs,
+            decay_steps=epochs,
+            end_value=1e-6,
+      )
       optimizer = optax.chain(
             optax.clip_by_global_norm(1.0),
-            optax.adamw(learning_rate)
+            optax.adamw(learning_schedule) # learning_rate
       )
 
       if model_name is None:
