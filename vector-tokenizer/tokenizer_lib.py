@@ -53,6 +53,33 @@ def get_split_data(path: str = "./data", resample_interval: str = "h"): # or "15
 
       return X, Y
 
+def make_train_step(apply_fn, optimizer, n_channels):
+    @jax.jit
+    def train_step(variables, opt_state, xb, yb, token_types, channel_ids):
+        # Ensure pure JAX function
+        def loss_fn(params):
+            return tokenizer.loss_fn(
+                params,
+                apply_fn,
+                xb,
+                token_types,
+                channel_ids,
+                n_channels,
+                yb,
+            )
+
+        loss, grads = jax.value_and_grad(loss_fn)(variables)
+        updates, opt_state = optimizer.update(grads, opt_state, variables)
+        variables = optax.apply_updates(variables, updates)
+
+        # JAX-friendly NaN flag (don’t branch inside jit; return it)
+        is_nan = jnp.isnan(loss)
+        return variables, opt_state, loss, is_nan
+
+    return train_step
+
+
+
 def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, resample_interval,
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
             vocab_size, n_bins, edges, mids, zero_bin, variables = None, model = None):
@@ -110,30 +137,28 @@ def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, r
             losses = model_file['losses']
 
       # Training loop
+      train_step = make_train_step(model.apply, optimizer, n_channels)
+
       pbar = tqdm(range(epochs))
       for epoch in pbar:
             rng_key, subkey = jax.random.split(rng_key)
+
             xb, yb = tokenizer.get_token_batch(train_tokens, subkey, batch_size, n_channels, block_size)
             token_types = tokenizer.compute_token_types(xb, n_channels)
             channel_ids = tokenizer.compute_channel_ids(xb, n_channels)
 
-            loss, grads = value_and_grad(tokenizer.loss_fn, argnums=(0))(
-                  variables, 
-                  model.apply,
-                  xb, 
+            variables, opt_state, loss, is_nan = train_step(
+                  variables,
+                  opt_state,
+                  xb,
+                  yb,
                   token_types,
                   channel_ids,
-                  n_channels,
-                  yb
             )
 
-            if math.isnan(loss):
-                  print(f"Premature stop (loss=nan) at epoch {epoch}")
-                  break
-
-            updates, opt_state = optimizer.update(grads, opt_state, variables)
-            variables = optax.apply_updates(variables, updates)
-            losses.append(loss)
+            # Bring scalar to host once per step (fine)
+            loss_f = float(loss)
+            losses.append(loss_f)
             
             pbar.set_description(f"Epoch: {epoch}, Loss: {loss :.4f}")
 

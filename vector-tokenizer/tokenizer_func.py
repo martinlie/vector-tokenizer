@@ -196,6 +196,10 @@ def loss_fn(
 
     DATA_OFFSET = 2 + n_channels
 
+    # make JAX scalars
+    w_data = jnp.asarray(w_data, dtype=ce.dtype)
+    w_grammar = jnp.asarray(w_grammar, dtype=ce.dtype)
+
     # build weights
     weights = jnp.where(
         y >= DATA_OFFSET,
@@ -204,7 +208,8 @@ def loss_fn(
     )
 
     # normalize so scale of loss is stable
-    loss = (ce * weights).sum() / weights.sum()
+    den = jnp.maximum(weights.sum(), 1e-12) # add epsilon to avoid div by zero
+    loss = (ce * weights).sum() / den
     return loss
 
 def compute_token_types(tokens, n_channels):

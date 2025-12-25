@@ -165,8 +165,7 @@ def generate_continue(
         )
 
         rng, sub = jax.random.split(rng)
-        masked_logits = jnp.where(mask, logits, -jnp.inf) #-1e9)
-        #next_tok = jax.random.categorical(sub, masked_logits)[0]
+        masked_logits = jnp.where(mask, logits, -jnp.inf)
 
         # prefer deterministic (greedy) selection for DATA tokens to reduce randomness;
         # sample stochastically for other token types
