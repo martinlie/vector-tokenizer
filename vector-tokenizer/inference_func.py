@@ -203,17 +203,381 @@ def generate_continue(
 
     return new_tokens
 
+def preprocess_covariates_from_future_matrix(
+    future_tokens,          # (H, n_channels) int32 DATA-tokens
+    covariate_cols,         # e.g. [1, 2] meaning columns/channels 1 and 2
+    zero_bin: int,          # token meaning "no change / no update"
+):
+    """
+    Build cov_present/cov_value from a dense future token matrix.
+
+    Semantics:
+      - If future_tokens[t, ch] == zero_bin, treat as "channel not mentioned" in cov frame t.
+      - Otherwise channel is present and the DATA token is forced to that value.
+
+    Returns:
+      cov_present: (H, n_channels) bool
+      cov_value:   (H, n_channels) int32 (only meaningful where cov_present True)
+      covariate_channels: (K,) int32 channel ids
+    """
+    F = np.asarray(future_tokens)
+    if F.ndim != 2:
+        raise ValueError(f"future_tokens must be 2D (H, n_channels). Got {F.shape}")
+
+    H, n_channels = F.shape
+    covariate_channels = np.asarray(covariate_cols, dtype=np.int32)
+    if covariate_channels.ndim != 1:
+        raise ValueError("covariate_cols must be 1D")
+    if np.any(covariate_channels < 0) or np.any(covariate_channels >= n_channels):
+        raise ValueError("covariate_cols contains out-of-range channel index")
+
+    cov_present = np.zeros((H, n_channels), dtype=bool)
+    cov_value   = np.zeros((H, n_channels), dtype=np.int32)
+
+    # Extract only covariate columns
+    cov_vals = F[:, covariate_channels].astype(np.int32)          # (H, K)
+    present  = cov_vals != np.int32(zero_bin)                     # (H, K)
+
+    cov_present[:, covariate_channels] = present
+    cov_value[:, covariate_channels]   = cov_vals                 # forced token (even if zero_bin; gated by present)
+
+    return cov_present, cov_value, covariate_channels
+
+# Deterministic ordered frame emission with covariate overwrite/suppression
+
+from functools import partial
+import jax
+import jax.numpy as jnp
+from jax import lax
+
+from functools import partial
+import jax
+import jax.numpy as jnp
+from jax import lax
+
+
+@partial(
+    jax.jit,
+    static_argnames=("forward_fn", "vocab_size", "block_size", "n_channels", "n_frames", "zero_bin"),
+)
+def generate_covariate_frames(
+    variables,
+    forward_fn,
+    token_stream,               # (T,)
+    rng_key,
+    vocab_size,
+    block_size,
+    n_channels,
+    cov_value_tokens,           # (H, n_channels) DATA-TOKEN ids (i.e. bins + DATA_OFFSET)
+    covariate_channels,         # (K,) channel ids, e.g. [1,2]
+    n_frames,                   # number of future frames to generate (must be static)
+    zero_bin,                   # BIN id, e.g. 2058
+    BOS=0,
+    EOS=1,
+):
+    token_stream = jnp.asarray(token_stream, dtype=jnp.int32)
+    cov_value_tokens = jnp.asarray(cov_value_tokens, dtype=jnp.int32)
+    covariate_channels = jnp.sort(jnp.asarray(covariate_channels, dtype=jnp.int32))
+
+    DATA_OFFSET = 2 + n_channels
+    CH_OFFSET = 2
+    zero_tok = jnp.int32(DATA_OFFSET + zero_bin)
+
+    # Fixed maximum tokens per frame if we emit all non-cov channels as CH+DATA:
+    # BOS + (n_channels * 2) + EOS
+    max_tpf = 2 + 2 * n_channels
+    out_len = n_frames * max_tpf
+
+    # initial context
+    pad_len = max(0, block_size - token_stream.shape[0])
+    ctx0 = jnp.concatenate([jnp.zeros((pad_len,), jnp.int32), token_stream[-block_size:]], axis=0)
+
+    emitted_any0 = emitted_any_from_stream(token_stream, n_channels)
+
+    # cov mask
+    cov_mask = jnp.zeros((n_channels,), dtype=jnp.bool_).at[covariate_channels].set(True)
+
+    def model_pick_data(ctx, emitted_any, rng):
+        # model predicts a DATA token (>= DATA_OFFSET) given current ctx
+        ctx_batched = ctx[None, :]
+        token_types, channel_ids = infer_token_types_and_channels(ctx_batched, n_channels)
+
+        logits = forward_fn(variables, ctx_batched, token_types, channel_ids)[:, -1]
+        last_tok = ctx[-1]
+        mask = grammar_mask_from_last(last_tok, emitted_any, vocab_size, n_channels)
+        masked_logits = jnp.where(mask, logits, -jnp.inf)
+
+        # deterministic for DATA
+        tok = jnp.asarray(jnp.argmax(masked_logits, axis=-1)[0], dtype=jnp.int32)
+        return tok, rng
+
+    def write_tok(ctx, tok):
+        return jnp.concatenate([ctx[1:], jnp.array([tok], jnp.int32)], axis=0)
+
+    def one_frame(carry, frame_idx):
+        ctx, rng, emitted_any = carry
+
+        # We'll build exactly max_tpf tokens, using a small loop and a pointer `p`.
+        out = jnp.full((max_tpf,), jnp.int32(EOS))  # default pad
+        p = jnp.int32(0)
+
+        def emit(tok, ctx, out, p, emitted_any):
+            out = out.at[p].set(tok)
+            ctx = write_tok(ctx, tok)
+            is_data = tok >= DATA_OFFSET
+            emitted_any = lax.select(tok == BOS, False, emitted_any | is_data)
+            return ctx, out, p + 1, emitted_any
+
+        # BOS
+        ctx, out, p, emitted_any = emit(jnp.int32(BOS), ctx, out, p, emitted_any)
+
+        # channels in canonical order 0..n_channels-1
+        def ch_body(ch, state):
+            ctx, rng, out, p, emitted_any = state
+
+            # if covariate channel -> force value; if forced value is zero_tok -> suppress channel
+            forced = cov_value_tokens[frame_idx, ch]
+            is_cov = cov_mask[ch]
+            suppress = is_cov & (forced == zero_tok)
+
+            def do_emit(_):
+                # emit CH
+                ctx2, out2, p2, emitted_any2 = emit(jnp.int32(CH_OFFSET + ch), ctx, out, p, emitted_any)
+
+                # emit DATA
+                def cov_data(_):
+                    return forced, rng
+                def model_data(_):
+                    return model_pick_data(ctx2, emitted_any2, rng)
+
+                data_tok, rng2 = lax.cond(is_cov, cov_data, model_data, operand=None)
+                ctx3, out3, p3, emitted_any3 = emit(data_tok, ctx2, out2, p2, emitted_any2)
+                return (ctx3, rng2, out3, p3, emitted_any3)
+
+            return lax.cond(suppress, lambda _: state, do_emit, operand=None)
+
+        ctx, rng, out, p, emitted_any = lax.fori_loop(
+            0, n_channels, ch_body, (ctx, rng, out, p, emitted_any)
+        )
+
+        # EOS
+        ctx, out, p, emitted_any = emit(jnp.int32(EOS), ctx, out, p, emitted_any)
+
+        return (ctx, rng, emitted_any), out
+
+    (ctxF, rngF, emitted_anyF), frames = lax.scan(one_frame, (ctx0, rng_key, emitted_any0), jnp.arange(n_frames))
+    flat = frames.reshape((-1,))
+    return flat
+
+@partial(
+    jax.jit,
+    static_argnames=[
+        "forward_fn",
+        "vocab_size",
+        "block_size",
+        "max_new_tokens",
+        "n_channels",
+        "zero_bin",
+    ],
+)
+def generate_covariate_continue(
+    variables,
+    forward_fn,
+    token_stream,               # (T,)
+    rng_key,
+    vocab_size,
+    block_size,
+    max_new_tokens,             # interpreted as a HARD token budget
+    n_channels,
+    cov_value=None,             # (H, n_channels) DATA tokens (future matrix)
+    covariate_channels=None,    # (K,) channel ids, e.g. [2,3]
+    zero_bin=0,                 # DATA token meaning "no change" => suppress cov channel
+    BOS=0,
+    EOS=1,
+):
+    token_stream = jnp.asarray(token_stream, dtype=jnp.int32)
+
+    if cov_value is None:
+        cov_value = jnp.zeros((1, n_channels), dtype=jnp.int32)
+    else:
+        cov_value = jnp.asarray(cov_value, dtype=jnp.int32)
+
+    if covariate_channels is None:
+        covariate_channels = jnp.zeros((0,), dtype=jnp.int32)
+    else:
+        covariate_channels = jnp.asarray(covariate_channels, dtype=jnp.int32)
+
+    # cov_mask[ch] True if channel is covariate-controlled
+    cov_mask = jnp.zeros((n_channels,), dtype=jnp.bool_)
+    cov_mask = lax.cond(
+        covariate_channels.size > 0,
+        lambda m: m.at[jnp.sort(covariate_channels)].set(True),
+        lambda m: m,
+        cov_mask,
+    )
+
+    DATA_OFFSET = 2 + n_channels
+    CH_OFFSET = 2
+    H = cov_value.shape[0]
+
+    emitted_any0 = emitted_any_from_stream(token_stream, n_channels)
+
+    def cov_tok(frame_idx, ch):
+        # beyond provided horizon => treat as zero_bin (suppressed)
+        return lax.cond(
+            frame_idx < H,
+            lambda _: cov_value[frame_idx, ch],
+            lambda _: jnp.int32(zero_bin),
+            operand=None,
+        ).astype(jnp.int32)
+
+    # ---------------------------------------------------------------------
+    # We generate a stream by emitting:
+    #   BOS,
+    #   for ch in 0..n_channels-1:
+    #       if cov_mask[ch]: emit CH+DATA only if cov_tok != zero_bin
+    #       else: emit CH + (model-predicted DATA)
+    #   EOS
+    # repeat until token budget exhausted
+    #
+    # This guarantees:
+    # - covariate channels match future matrix when non-zero_bin
+    # - covariate channels are suppressed when zero_bin
+    # - non-cov channels are predicted by the model
+    # - channel order is canonical
+    # ---------------------------------------------------------------------
+
+    def step(carry, _):
+        ctx, rng, emitted_any, frame_idx, phase, ch, sub = carry
+        # phase: 0 = emit BOS, 1 = emit channels, 2 = emit EOS
+        # sub (only in phase=1): 0 = emit CH, 1 = emit DATA
+
+        def emit_bos(_):
+            return jnp.int32(BOS), jnp.int32(1), jnp.int32(0), jnp.int32(0), rng
+
+        def emit_eos(_):
+            return jnp.int32(EOS), jnp.int32(0), jnp.int32(0), jnp.int32(0), rng
+
+        def emit_channel(_):
+            # Skip covariate channels whose cov token is zero_bin (emit nothing, just advance ch)
+            def skip_cond(state):
+                ch_ = state
+                v = cov_tok(frame_idx, ch_)
+                return (ch_ < n_channels) & cov_mask[ch_] & (v == jnp.int32(zero_bin))
+
+            def skip_body(ch_):
+                return ch_ + 1
+
+            ch2 = lax.while_loop(skip_cond, skip_body, ch)
+
+            # If we've finished channels, next is EOS
+            done = ch2 >= n_channels
+
+            def when_done(_):
+                # return a dummy token; caller will switch phase to EOS next
+                return jnp.int32(-1), jnp.int32(2), jnp.int32(0), jnp.int32(0), rng
+
+            def when_not_done(_):
+                is_cov = cov_mask[ch2]
+
+                def emit_ch(_):
+                    tok = jnp.int32(CH_OFFSET) + jnp.int32(ch2)
+                    return tok, jnp.int32(1), jnp.int32(ch2), jnp.int32(1), rng  # next sub=DATA
+
+                def emit_data(_):
+                    # If covariate channel: force cov token
+                    def cov_data(_):
+                        tok = cov_tok(frame_idx, ch2)
+                        return tok.astype(jnp.int32), rng
+
+                    # Else: sample/argmax data token from model, given context after CH
+                    def model_data(_):
+                        ctx_batched = ctx[None, :]
+                        token_types, channel_ids = infer_token_types_and_channels(ctx_batched, n_channels)
+
+                        logits = forward_fn(
+                            variables,
+                            ctx_batched,
+                            token_types,
+                            channel_ids,
+                        )[:, -1]
+
+                        last_tok = ctx[-1]
+                        mask = grammar_mask_from_last(last_tok, emitted_any, vocab_size, n_channels)
+                        masked_logits = jnp.where(mask, logits, -jnp.inf)
+
+                        rng2, subkey = jax.random.split(rng)
+
+                        # DATA step is deterministic to reduce noise, mirroring your original preference
+                        tok = jnp.asarray(jnp.argmax(masked_logits, axis=-1)[0], dtype=jnp.int32)
+                        return tok, rng2
+
+                    tok, rng2 = lax.cond(is_cov, cov_data, model_data, operand=None)
+
+                    # After DATA, advance to next channel
+                    return tok, jnp.int32(1), jnp.int32(ch2 + 1), jnp.int32(0), rng2
+
+                return lax.cond(sub == 0, emit_ch, emit_data, operand=None)
+
+            return lax.cond(done, when_done, when_not_done, operand=None)
+
+        # choose emission based on phase
+        next_tok, next_phase, next_ch, next_sub, rng = lax.cond(
+            phase == 0,
+            emit_bos,
+            lambda _: lax.cond(phase == 1, emit_channel, emit_eos, operand=None),
+            operand=None,
+        )
+
+        # If channel phase returned -1 (means channels done), emit EOS next
+        phase = lax.select(next_tok == jnp.int32(-1), jnp.int32(2), next_phase)
+        next_tok = lax.select(next_tok == jnp.int32(-1), jnp.int32(EOS), next_tok)
+
+        # update emitted_any
+        is_data = next_tok >= DATA_OFFSET
+        emitted_any = lax.select(next_tok == BOS, False, emitted_any | is_data)
+
+        # frame counter sync: advance on EOS
+        frame_idx = frame_idx + (next_tok == EOS).astype(jnp.int32)
+
+        # roll context and append
+        ctx = jnp.concatenate([ctx[1:], jnp.array([next_tok], dtype=jnp.int32)], axis=0)
+        return (ctx, rng, emitted_any, frame_idx, phase, next_ch, next_sub), next_tok
+
+    # init ctx (pad left)
+    pad_len = max(0, block_size - token_stream.shape[0])
+    pad = jnp.zeros((pad_len,), dtype=jnp.int32)
+    ctx0 = jnp.concatenate([pad, token_stream[-block_size:]], axis=0)
+
+    carry0 = (
+        ctx0,
+        rng_key,
+        emitted_any0,
+        jnp.int32(0),   # frame_idx (future row index)
+        jnp.int32(0),   # phase (start by emitting BOS)
+        jnp.int32(0),   # ch
+        jnp.int32(0),   # sub
+    )
+
+    (_, _, _, _, _, _, _), new_tokens = lax.scan(step, carry0, None, length=max_new_tokens)
+    return new_tokens
+
+
 def pad_tokens(tokens, T_max=512):
       PAD = 0  # BOS
       return jnp.pad(tokens, (0, T_max - tokens.shape[0]), constant_values=PAD)
 
+from functools import partial
+import jax
+import jax.numpy as jnp
+from jax import lax
+
+
 @partial(
-      jax.jit, 
-      static_argnames=(
-            "n_channels",
-      )
+    jax.jit,
+    static_argnames=("n_channels", "zero_bin"),
 )
-def decode_with_channels_stream(flat, n_channels):
+def decode_with_channels_stream(flat, n_channels, zero_bin):
     """
     Decode a flat token stream into completed frames.
 
@@ -224,8 +588,9 @@ def decode_with_channels_stream(flat, n_channels):
     - DATA tokens assign value to last CH
     - Unfinished trailing frames are skipped
 
-    Returns:
-        (N, n_channels) array
+    IMPORTANT semantics for delta models:
+    - Channels not mentioned in a frame decode to `zero_bin` (no change).
+    - Empty frames (BOS ... EOS with no DATA) are still emitted as all-zero_bin rows.
     """
     BOS = 0
     EOS = 1
@@ -256,9 +621,9 @@ def decode_with_channels_stream(flat, n_channels):
         def start_frame_fn(_):
             return (
                 True,
-                jnp.zeros_like(current_row),
-                jnp.zeros_like(seen),
-                -1,
+                jnp.full((n_channels,), jnp.asarray(zero_bin, dtype=flat.dtype), dtype=flat.dtype),
+                jnp.zeros((n_channels,), dtype=jnp.bool_),
+                jnp.int32(-1),
             )
 
         frame_active, current_row, seen, current_ch = lax.cond(
@@ -271,14 +636,14 @@ def decode_with_channels_stream(flat, n_channels):
         # ---- channel select ----
         current_ch = lax.cond(
             frame_active & is_ch,
-            lambda _: tok - CH_OFFSET,
+            lambda _: (tok - CH_OFFSET).astype(jnp.int32),
             lambda _: current_ch,
             operand=None,
         )
 
         # ---- data write ----
         def write_data_fn(_):
-            row = current_row.at[current_ch].set(tok - DATA_OFFSET)
+            row = current_row.at[current_ch].set((tok - DATA_OFFSET).astype(flat.dtype))
             s = seen.at[current_ch].set(True)
             return row, s
 
@@ -290,7 +655,8 @@ def decode_with_channels_stream(flat, n_channels):
         )
 
         # ---- EOS emits frame ----
-        emit = frame_active & is_eos & jnp.any(seen)
+        # Emit even if `seen` is all False: empty frame == all zero_bin changes
+        emit = frame_active & is_eos
 
         def emit_fn(_):
             rows = out_rows.at[out_idx].set(current_row)
@@ -320,16 +686,14 @@ def decode_with_channels_stream(flat, n_channels):
 
     init_carry = (
         False,
-        jnp.zeros((n_channels,), flat.dtype),
-        jnp.zeros((n_channels,), bool),
-        -1,
+        jnp.full((n_channels,), jnp.asarray(zero_bin, dtype=flat.dtype), dtype=flat.dtype),
+        jnp.zeros((n_channels,), dtype=jnp.bool_),
+        jnp.int32(-1),
         jnp.zeros((max_frames, n_channels), flat.dtype),
-        jnp.zeros((max_frames,), bool),
-        0,
+        jnp.zeros((max_frames,), dtype=jnp.bool_),
+        jnp.int32(0),
     )
 
-    (final_carry, _) = lax.scan(step, init_carry, flat)
-
-    out_rows, out_mask, out_idx = final_carry[4], final_carry[5], final_carry[6]
-
+    final_carry, _ = lax.scan(step, init_carry, flat)
+    out_rows, out_idx = final_carry[4], final_carry[6]
     return out_rows, out_idx

@@ -236,3 +236,32 @@ def decode_equal_width_global(tokens, mids):
 
     return jnp.where(tokens == 0, 0.0, values) # jnp.nan
 
+# u_max = asinh(x_max / s). Controls tail coverage.
+# Example: cover x_max=6 stdev with s=1 ⇒ u_max = asinh(6) ≈ 2.49.
+
+def make_asinh_bins_with_zero(n_bins: int, u_max: float):
+    """
+    n_bins MUST be odd
+    """
+    assert n_bins % 2 == 1, "n_bins must be odd to have a zero bin"
+
+    half = n_bins // 2
+
+    mids_u_pos = jnp.linspace(0.0, u_max, half + 1)[1:]  # skip zero
+    mids_u = jnp.concatenate([-mids_u_pos[::-1], jnp.array([0.0]), mids_u_pos])
+
+    edges_u = (mids_u[:-1] + mids_u[1:]) / 2
+
+    zero_bin = half
+
+    return edges_u, mids_u, zero_bin
+
+def encode_asinh_global(x, edges_u, s: float):
+    u = jnp.arcsinh(x / s)
+    return jnp.digitize(u, jnp.asarray(edges_u))
+
+def decode_asinh_global(tokens, mids_u, s: float):
+    mids_u = jnp.asarray(mids_u)
+    tok = jnp.clip(jnp.asarray(tokens), 0, mids_u.shape[0] - 1)
+    u_mid = mids_u[tok]
+    return s * jnp.sinh(u_mid)

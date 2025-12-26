@@ -82,7 +82,7 @@ def make_train_step(apply_fn, optimizer, n_channels):
 
 def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, resample_interval,
             batch_size, n_channels, block_size, n_embed, num_heads, num_layers, drop_rate, 
-            vocab_size, n_bins, edges, mids, zero_bin, variables = None, model = None):
+            vocab_size, n_bins, edges, mids, zero_bin, s, x_max, variables = None, model = None):
 
       MODEL_DIR = Path("./models")
       MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,6 +180,8 @@ def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, r
                   "sigma": sigma,
                   "resample_interval": resample_interval,
                   "zero_bin": zero_bin,
+                  "s": s,
+                  "x_max": x_max,
             }
 
             # Save model every 10th epoch or if last
