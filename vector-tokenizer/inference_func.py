@@ -244,21 +244,9 @@ def preprocess_covariates_from_future_matrix(
     return cov_present, cov_value, covariate_channels
 
 # Deterministic ordered frame emission with covariate overwrite/suppression
-
-from functools import partial
-import jax
-import jax.numpy as jnp
-from jax import lax
-
-from functools import partial
-import jax
-import jax.numpy as jnp
-from jax import lax
-
-
 @partial(
     jax.jit,
-    static_argnames=("forward_fn", "vocab_size", "block_size", "n_channels", "n_frames", "zero_bin"),
+    static_argnames=("forward_fn", "vocab_size", "block_size", "n_channels", "n_frames", "zero_bin", "temperature", "top_k"),
 )
 def generate_covariate_frames(
     variables,
@@ -272,6 +260,8 @@ def generate_covariate_frames(
     covariate_channels,         # (K,) channel ids, e.g. [1,2]
     n_frames,                   # number of future frames to generate (must be static)
     zero_bin,                   # BIN id, e.g. 2058
+    temperature=0.7, 
+    top_k=16,
     BOS=0,
     EOS=1,
 ):
@@ -297,7 +287,14 @@ def generate_covariate_frames(
     # cov mask
     cov_mask = jnp.zeros((n_channels,), dtype=jnp.bool_).at[covariate_channels].set(True)
 
-    def model_pick_data(ctx, emitted_any, rng):
+    def top_k_mask(logits, k):
+        if k is None:
+            return logits
+        values, _ = jax.lax.top_k(logits, k)
+        cutoff = values[..., -1, None]
+        return jnp.where(logits >= cutoff, logits, -jnp.inf)
+
+    def model_pick_data(ctx, emitted_any, rng, temperature=0.7, top_k=16):
         # model predicts a DATA token (>= DATA_OFFSET) given current ctx
         ctx_batched = ctx[None, :]
         token_types, channel_ids = infer_token_types_and_channels(ctx_batched, n_channels)
@@ -308,7 +305,14 @@ def generate_covariate_frames(
         masked_logits = jnp.where(mask, logits, -jnp.inf)
 
         # deterministic for DATA
-        tok = jnp.asarray(jnp.argmax(masked_logits, axis=-1)[0], dtype=jnp.int32)
+        #tok = jnp.asarray(jnp.argmax(masked_logits, axis=-1)[0], dtype=jnp.int32)
+        # stochastic sampling (uncomment if desired)
+        masked_logits = top_k_mask(masked_logits, top_k)
+        scaled_logits = masked_logits / temperature
+        rng, subkey = jax.random.split(rng)
+        tok = jax.random.categorical(subkey, scaled_logits, axis=-1)
+        tok = tok.astype(jnp.int32)[0]
+
         return tok, rng
 
     def write_tok(ctx, tok):
@@ -348,7 +352,7 @@ def generate_covariate_frames(
                 def cov_data(_):
                     return forced, rng
                 def model_data(_):
-                    return model_pick_data(ctx2, emitted_any2, rng)
+                    return model_pick_data(ctx2, emitted_any2, rng, temperature, top_k)
 
                 data_tok, rng2 = lax.cond(is_cov, cov_data, model_data, operand=None)
                 ctx3, out3, p3, emitted_any3 = emit(data_tok, ctx2, out2, p2, emitted_any2)
@@ -566,11 +570,6 @@ def generate_covariate_continue(
 def pad_tokens(tokens, T_max=512):
       PAD = 0  # BOS
       return jnp.pad(tokens, (0, T_max - tokens.shape[0]), constant_values=PAD)
-
-from functools import partial
-import jax
-import jax.numpy as jnp
-from jax import lax
 
 
 @partial(
