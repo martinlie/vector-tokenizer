@@ -185,7 +185,7 @@ def train(model_name, rng_key, epochs, learning_rate, train_tokens, mu, sigma, r
             }
 
             # Save model every 10th epoch or if last
-            is_every_10 = (epoch + 1) % 10 == 0
+            is_every_10 = (epoch + 1) % 1000 == 0
             is_last = (epoch == epochs - 1)
             if is_every_10 or is_last:
                   with open(model_name, 'wb') as f:
