@@ -42,8 +42,14 @@ def get_split_data(path: str = "./data", resample_interval: str = "h"): # or "15
       # Fill nans with nearest
       df = df.ffill()
 
+      # Add time of day features
+      minutes_per_day = 24 * 60
+      t = df.index.hour * 60 + df.index.minute
+      df["time_of_day_sin"] = np.sin(2 * np.pi * t / minutes_per_day)
+      df["time_of_day_cos"] = np.cos(2 * np.pi * t / minutes_per_day)
+
       # Columns of interest
-      cols = ['Power demand', 'temp', 'dwpt', 'rhum', 'wdir', 'wspd', 'pres']
+      cols = ['time_of_day_sin', 'time_of_day_cos', 'Power demand', 'temp', 'dwpt', 'rhum', 'wdir', 'wspd', 'pres']
       df = df[cols]
 
       # Split in train/test
