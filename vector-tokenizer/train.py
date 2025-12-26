@@ -15,7 +15,7 @@ num_heads = 12 #4 # Number of heads in the multi-headed block
 num_layers = 12 #6 # Number of transformer decoder blocks
 drop_rate = 0.1 # Dropout rate for regularization
 learning_rate = 3e-5 #1e-5
-epochs = 10000
+epochs = 20000
 resample_interval = "h"  # or "15min"
 
 rng_key = jax.random.PRNGKey(42)
@@ -89,9 +89,8 @@ if __name__ == "__main__":
       print("Last 100 tokens:", tokens[:100])
 
       # Continue training
-      #model_name = "token_model_20251222_140751.pkl" # 15 min data interval
-      #model_name = "token_model_20251223_095047.pkl" # hourly data interval
-      model_name = None
+      model_name = "token_model_20251226_194800.pkl"
+      #model_name = None
 
       # Train
       model_file = tl.train(model_name, rng_key, epochs, learning_rate, 
